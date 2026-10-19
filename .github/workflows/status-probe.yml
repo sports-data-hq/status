@@ -1,0 +1,80 @@
+# Outside probe for the SportsDataHQ /status pages (puckapi.com/status, endzoneapi.com/status and the rest).
+#
+# It runs on GitHub's runners, not on Vercel or Railway where the APIs are hosted, so an outage there
+# cannot also stop the measuring, and every run is public in this repo's Actions tab. Every five
+# minutes each brand's website (GET /) and MCP server (an `initialize` request, which needs no key
+# and spends no credits) is tried once. The result is posted to that brand's /api/internal/status
+# and stored; the /status page computes every figure from those rows. GitHub's scheduler may start
+# a run late or skip one; the pages show such gaps as "no data", never as "up".
+#
+# Needs the repo secret STATUS_SECRET (the same value each brand's deployment holds).
+name: Status probe
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: status-probe
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      STATUS_SECRET: ${{ secrets.STATUS_SECRET }}
+      # The launched brands. Add a brand here when it launches.
+      BRANDS: puckapi.com endzoneapi.com dunkapi.com fastballapi.com strikerapi.com acesapi.com birdieapi.com fighterapi.com
+    steps:
+      - name: Probe and record
+        shell: bash
+        run: |
+          set -u
+          [ -n "$STATUS_SECRET" ] || { echo "STATUS_SECRET is not set"; exit 1; }
+          dir=$(mktemp -d)
+
+          # Prints "<http status> <latency ms> <curl exit code>"; a transport failure has status 0
+          check() { # name url [curl args...]
+            local name=$1 url=$2; shift 2
+            local out rc
+            out=$(curl -sS -o "$dir/$name.body" -w '%{http_code} %{time_total}' --max-time 15 "$@" "$url" 2>"$dir/$name.err") && rc=0 || rc=$?
+            local code=$((10#${out%% *})) secs=${out##* }
+            echo "$code $(awk -v s="${secs:-0}" 'BEGIN{printf "%d", s*1000}') $rc"
+          }
+
+          probe_brand() {
+            local domain=$1 slug=${1%%.*}
+            read -r wcode wms wrc < <(check "$slug-web" "https://$domain/")
+            read -r mcode mms mrc < <(check "$slug-mcp" "https://mcp.$domain/mcp" -X POST \
+              -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"sdhq-status-probe","version":"1"}}}')
+
+            local wok=false mok=false werr="" merr=""
+            if [ "$wrc" = 0 ] && [ "$wcode" -ge 200 ] && [ "$wcode" -lt 300 ]; then wok=true; else werr=$([ "$wrc" != 0 ] && echo "curl exit $wrc" || echo "HTTP $wcode"); fi
+            if [ "$mrc" = 0 ] && [ "$mcode" = 200 ] && grep -q '"protocolVersion"' "$dir/$slug-mcp.body"; then mok=true; else merr=$([ "$mrc" != 0 ] && echo "curl exit $mrc" || echo "HTTP $mcode or no initialize result"); fi
+
+            local body
+            body=$(jq -n --argjson wok $wok --argjson mok $mok \
+              --argjson wcode "$wcode" --argjson wms "$wms" --arg werr "$werr" \
+              --argjson mcode "$mcode" --argjson mms "$mms" --arg merr "$merr" \
+              '{results: [
+                 {surface:"web", ok:$wok, httpStatus:(if $wcode>0 then $wcode else null end), latencyMs:$wms, error:(if $werr=="" then null else $werr end)},
+                 {surface:"mcp", ok:$mok, httpStatus:(if $mcode>0 then $mcode else null end), latencyMs:$mms, error:(if $merr=="" then null else $merr end)}]}')
+
+            if curl -sS -o /dev/null --max-time 20 --retry 2 --retry-delay 3 --retry-all-errors --fail -X POST \
+                 -H "authorization: Bearer $STATUS_SECRET" -H 'content-type: application/json' \
+                 -d "$body" "https://$domain/api/internal/status" 2>"$dir/$slug-post.err"; then
+              echo "$domain web=$wok($wcode ${wms}ms) mcp=$mok($mcode ${mms}ms) recorded"
+            else
+              echo "$domain web=$wok mcp=$mok NOT RECORDED: $(head -c 200 "$dir/$slug-post.err")"
+              touch "$dir/$slug.failed"
+            fi
+          }
+
+          for d in $BRANDS; do probe_brand "$d" & done
+          wait
+          ls "$dir"/*.failed >/dev/null 2>&1 && { echo "some results were not recorded"; exit 1; } || exit 0
