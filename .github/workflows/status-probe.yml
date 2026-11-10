@@ -7,6 +7,11 @@
 # and stored; the /status page computes every figure from those rows. GitHub's scheduler may start
 # a run late or skip one; the pages show such gaps as "no data", never as "up".
 #
+# GitHub starts the five-minute schedule only every few hours on this repo (Nov 2026: 3 of 288 slots in a day), so
+# one run probes every five minutes for most of the six hours a job may last, then starts the next run itself
+# (a workflow_dispatch from GITHUB_TOKEN is allowed to start a run). The schedule stays as the restart if that chain
+# ever breaks. Public repo: the minutes are free.
+#
 # Needs the repo secret STATUS_SECRET (the same value each brand's deployment holds).
 name: Status probe
 
@@ -19,16 +24,19 @@ concurrency:
   group: status-probe
   cancel-in-progress: false
 
-permissions: {}
+permissions:
+  actions: write  # to start the next run when this one ends
 
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 355
     env:
       STATUS_SECRET: ${{ secrets.STATUS_SECRET }}
       # The launched brands. Add a brand here when it launches.
       BRANDS: puckapi.com endzoneapi.com dunkapi.com fastballapi.com strikerapi.com acesapi.com birdieapi.com fighterapi.com yorkerapi.com
+      # Five-minute rounds per run: 68 is about 5 h 40 m, inside the 355-minute limit.
+      ROUNDS: "68"
     steps:
       - name: Probe and record
         shell: bash
@@ -75,6 +83,20 @@ jobs:
             fi
           }
 
-          for d in $BRANDS; do probe_brand "$d" & done
-          wait
-          ls "$dir"/*.failed >/dev/null 2>&1 && { echo "some results were not recorded"; exit 1; } || exit 0
+          failed=0
+          for round in $(seq 1 "$ROUNDS"); do
+            start=$(date +%s)
+            rm -f "$dir"/*.failed
+            echo "round $round $(date -u +%H:%M:%S)"
+            for d in $BRANDS; do probe_brand "$d" & done
+            wait
+            ls "$dir"/*.failed >/dev/null 2>&1 && { echo "some results were not recorded"; failed=1; }
+            [ "$round" -lt "$ROUNDS" ] && sleep $(( 300 - ($(date +%s) - start) % 300 ))
+          done
+          exit $failed
+
+      - name: Start the next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run status-probe.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
