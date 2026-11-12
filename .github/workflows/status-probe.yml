@@ -28,7 +28,7 @@ jobs:
     env:
       STATUS_SECRET: ${{ secrets.STATUS_SECRET }}
       # The launched brands. Add a brand here when it launches.
-      BRANDS: puckapi.com endzoneapi.com dunkapi.com fastballapi.com strikerapi.com acesapi.com birdieapi.com fighterapi.com
+      BRANDS: puckapi.com endzoneapi.com dunkapi.com fastballapi.com strikerapi.com acesapi.com birdieapi.com fighterapi.com yorkerapi.com
     steps:
       - name: Probe and record
         shell: bash

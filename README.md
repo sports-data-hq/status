@@ -4,7 +4,7 @@ The independent uptime check behind the status pages of the SportsDataHQ APIs:
 [PuckAPI](https://puckapi.com/status), [EndzoneAPI](https://endzoneapi.com/status),
 [DunkAPI](https://dunkapi.com/status), [FastballAPI](https://fastballapi.com/status),
 [StrikerAPI](https://strikerapi.com/status), [AcesAPI](https://acesapi.com/status),
-[BirdieAPI](https://birdieapi.com/status) and [FighterAPI](https://fighterapi.com/status).
+[BirdieAPI](https://birdieapi.com/status), [FighterAPI](https://fighterapi.com/status) and [YorkerAPI](https://yorkerapi.com/status).
 
 Every five minutes, [one GitHub Actions workflow](.github/workflows/status-probe.yml) loads each
 brand's website and sends its MCP server an `initialize` request, then records the HTTP status and
